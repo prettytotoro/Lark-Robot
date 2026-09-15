@@ -204,12 +204,32 @@ with tab_bots:
 
             st.markdown("### 1️⃣ 登录方式")
             login_type = st.selectbox(
-                "登录类型", ["none", "form", "json_api"],
-                index=["none", "form", "json_api"].index(existing["login"]["type"]) if existing else 0,
-                format_func=lambda x: {"none": "不需要登录", "form": "表单登录", "json_api": "JSON接口登录"}[x],
+                "登录类型", ["none", "cookie", "form", "json_api"],
+                index=["none", "cookie", "form", "json_api"].index(existing["login"]["type"]) if existing else 0,
+                format_func=lambda x: {"none": "不需要登录", "cookie": "Cookie直接登录(推荐，浏览器复制)", "form": "表单登录", "json_api": "JSON接口登录"}[x],
             )
             login_cfg = {"type": login_type}
-            if login_type != "none":
+            if login_type == "cookie":
+                st.caption(
+                    "F12打开开发者工具→Network→找一个登录后能成功返回数据的请求→Headers标签页→"
+                    "Request Headers里的Cookie那一行，整段复制粘贴到下面。Cookie会过期，过期后要重新复制更新。"
+                )
+                login_cfg["cookie"] = st.text_area("Cookie", value=existing["login"].get("cookie", "") if existing else "", height=100)
+                st.caption(
+                    "如果只填Cookie还是401，去同一个请求的Request Headers里看有没有 token/satoken/Authorization 这类自定义header，"
+                    "有的话也加进来（一行一个，格式：Header名: 值）"
+                )
+                extra_headers_raw = st.text_area(
+                    "额外请求头(可选)", height=80,
+                    value="\n".join(f"{k}: {v}" for k, v in (existing["login"].get("extra_headers", {}) if existing else {}).items()),
+                    placeholder="Authorization: Bearer xxx\nsatoken: xxx",
+                )
+                login_cfg["extra_headers"] = {}
+                for line in extra_headers_raw.splitlines():
+                    if ":" in line:
+                        k, v = line.split(":", 1)
+                        login_cfg["extra_headers"][k.strip()] = v.strip()
+            elif login_type != "none":
                 c1, c2 = st.columns(2)
                 login_cfg["url"] = c1.text_input("登录URL", value=existing["login"].get("url", "") if existing else "")
                 login_cfg["username"] = c2.text_input("账号", value=existing["login"].get("username", "") if existing else "")

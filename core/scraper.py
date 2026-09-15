@@ -42,6 +42,18 @@ def login_session(login_cfg: dict) -> requests.Session:
     if login_type == "none":
         return session
 
+    if login_type == "cookie":
+        # 直接复用浏览器里已登录会话的Cookie，不用重放登录流程
+        # (很多内部系统的登录不是简单的账号密码POST，可能涉及CSRF/SSO/多步验证，
+        #  遇到这种情况用Cookie模式最省事，缺点是Cookie过期后要手动更新)
+        cookie_str = login_cfg.get("cookie", "")
+        if cookie_str:
+            session.headers.update({"Cookie": cookie_str})
+        extra_headers = login_cfg.get("extra_headers", {}) or {}
+        if extra_headers:
+            session.headers.update(extra_headers)
+        return session
+
     headers = login_cfg.get("extra_headers", {}) or {}
     if headers:
         session.headers.update(headers)
