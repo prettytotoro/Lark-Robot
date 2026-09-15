@@ -9,11 +9,14 @@ Lark机器人制作小程序 - 低代码配置UI
 两者通过 bots_config.json 交互，worker 每60秒自动感知配置变化。
 """
 
+import json
 import streamlit as st
+from bs4 import BeautifulSoup
 from core.config_store import (
     load_config, add_webhook, delete_webhook,
     upsert_bot, delete_bot, get_bot,
 )
+from core.field_detector import detect_json_fields, detect_html_fields
 
 st.set_page_config(page_title="Lark机器人制作小程序", layout="wide")
 st.title("🤖 Lark机器人制作小程序")
@@ -131,7 +134,109 @@ with tab_bots:
             fetch_method = c2.selectbox("方法", ["GET", "POST"], index=0 if not existing or existing["fetch"].get("method", "GET") == "GET" else 1)
             response_type = st.radio("返回格式", ["json", "html"], index=0 if not existing or existing["fetch"].get("response_type", "json") == "json" else 1, horizontal=True)
 
-            st.markdown("**要提取的字段**（比如总量、日期这种单值）")
+            with st.expander("🔍 上传样本自动识别字段（推荐，不用自己写路径/选择器）", expanded=False):
+                st.caption(
+                    "登录目标网站后，从浏览器F12开发者工具里把数据接口的Response复制出来存成 .json 文件；"
+                    "如果是网页表格类的数据，网页另存为 .html 也行。上传后自动扫出候选字段，勾选想要的就行。"
+                )
+                sample_file = st.file_uploader("上传样本文件(.json / .html)", type=["json", "html", "txt"], key="sample_uploader")
+                if sample_file is not None:
+                    raw_bytes = sample_file.read()
+                    is_json = sample_file.name.lower().endswith(".json")
+                    if not is_json:
+                        # 兜底：即使是.txt/.html，也先试试能不能当json解析
+                        try:
+                            json.loads(raw_bytes.decode("utf-8"))
+                            is_json = True
+                        except Exception:
+                            is_json = False
+
+                    if is_json:
+                        parsed_sample = json.loads(raw_bytes.decode("utf-8"))
+                        leaves, array_cands, dict_cands = detect_json_fields(parsed_sample)
+
+                        st.write(f"识别到 {len(leaves)} 个单值字段候选：")
+                        chosen_leaf_idx = []
+                        for i, leaf in enumerate(leaves):
+                            c1, c2 = st.columns([1, 4])
+                            checked = c1.checkbox("选", key=f"leafchk_{i}", label_visibility="collapsed")
+                            c2.write(f"`{leaf['path']}` → 建议命名 **{leaf['key_suggestion']}**，样例值: `{leaf['value_preview']}`")
+                            if checked:
+                                chosen_leaf_idx.append(i)
+                        if st.button("✅ 把勾选的单值字段加入字段列表"):
+                            existing_paths = {f["path"] for f in st.session_state["bot_fields"]}
+                            for i in chosen_leaf_idx:
+                                leaf = leaves[i]
+                                if leaf["path"] not in existing_paths:
+                                    st.session_state["bot_fields"].append({"key": leaf["key_suggestion"], "path": leaf["path"]})
+                            st.success(f"已加入 {len(chosen_leaf_idx)} 个字段")
+                            st.rerun()
+
+                        if array_cands:
+                            st.write("识别到数组型明细候选(比如按站点拆分的多行数据)：")
+                            for i, arr in enumerate(array_cands):
+                                st.write(f"路径 `{arr['path']}`，共 {arr['size']} 条，字段: {arr['item_keys']}，样例: `{arr['sample']}`")
+                                if st.button(f"设为明细列表", key=f"setarr_{i}"):
+                                    st.session_state["bot_list_source"] = "array"
+                                    st.session_state["bot_list_cfg"] = {
+                                        "source": "array",
+                                        "path": arr["path"],
+                                        "item_fields": [{"key": k, "path": k} for k in arr["item_keys"]],
+                                    }
+                                    st.success("已设为明细列表，下面「明细列表」区域已自动填好")
+                                    st.rerun()
+
+                        if dict_cands:
+                            st.write("识别到字典型明细候选(比如 {站点: 数量})：")
+                            for i, dc in enumerate(dict_cands):
+                                st.write(f"路径 `{dc['path']}`，共 {dc['size']} 项，样例: `{dc['sample']}`")
+                                if st.button(f"设为明细列表 ", key=f"setdict_{i}"):
+                                    st.session_state["bot_list_source"] = "dict_items"
+                                    st.session_state["bot_list_cfg"] = {
+                                        "source": "dict_items",
+                                        "path": dc["path"],
+                                        "key_field": "key",
+                                        "value_field": "value",
+                                    }
+                                    st.success("已设为明细列表，下面「明细列表」区域已自动填好")
+                                    st.rerun()
+                    else:
+                        soup = BeautifulSoup(raw_bytes.decode("utf-8", errors="ignore"), "html.parser")
+                        leaf_cands, row_cands = detect_html_fields(soup)
+                        st.caption("HTML识别是启发式扫描，不保证100%准确，建议加入后人工核对一下选择器。")
+
+                        st.write(f"识别到 {len(leaf_cands)} 个单值字段候选：")
+                        chosen_html_idx = []
+                        for i, leaf in enumerate(leaf_cands):
+                            c1, c2 = st.columns([1, 4])
+                            checked = c1.checkbox("选", key=f"htmlleafchk_{i}", label_visibility="collapsed")
+                            c2.write(f"`{leaf['path']}` → 建议命名 **{leaf['key_suggestion']}**，样例值: `{leaf['value_preview']}`")
+                            if checked:
+                                chosen_html_idx.append(i)
+                        if st.button("✅ 把勾选的单值字段加入字段列表 "):
+                            existing_paths = {f["path"] for f in st.session_state["bot_fields"]}
+                            for i in chosen_html_idx:
+                                leaf = leaf_cands[i]
+                                if leaf["path"] not in existing_paths:
+                                    st.session_state["bot_fields"].append({"key": leaf["key_suggestion"], "path": leaf["path"]})
+                            st.success(f"已加入 {len(chosen_html_idx)} 个字段")
+                            st.rerun()
+
+                        if row_cands:
+                            st.write("识别到重复行候选(可能是明细列表)，选一个作为明细来源：")
+                            for i, row in enumerate(row_cands):
+                                st.write(f"选择器 `{row['selector']}`，共 {row['count']} 行，样例: `{row['sample_text']}`")
+                                if st.button("设为明细列表(HTML)", key=f"sethtmlrow_{i}"):
+                                    st.session_state["bot_list_source"] = "html_repeat"
+                                    st.session_state["bot_list_cfg"] = {
+                                        "source": "html_repeat",
+                                        "html_selector": row["selector"],
+                                        "html_item_fields": [],  # 行内子字段选择器建议手动补充，结构差异太大不好自动猜
+                                    }
+                                    st.info("已设为明细列表框架，但行内子字段选择器需要你去下面「明细列表」区域手动补一下(结构差异太大没法自动猜)")
+                                    st.rerun()
+
+            st.markdown("**要提取的字段**（比如总量、日期这种单值，也可以从上面自动识别里勾选加入）")
             for i, f in enumerate(st.session_state["bot_fields"]):
                 c1, c2, c3 = st.columns([2, 3, 1])
                 f["key"] = c1.text_input("字段名(消息模板里用 {字段名} 引用)", value=f.get("key", ""), key=f"fkey_{i}")
